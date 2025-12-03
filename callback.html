@@ -3,18 +3,26 @@
 <head>
   <meta charset="utf-8">
   <title>Callback</title>
+  <script src="config.js"></script>
   <script>
     window.onload = function () {
-      // Redirect token fragment to login.html
-      if (window.location.hash) {
-        window.location = "login.html" + window.location.hash;
+
+      // Ambil token dari hash (#access_token=xxxx)
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const token = params.get("access_token");
+
+      if (token) {
+        // Kirim token ke window utama
+        window.opener.postMessage(token, config.uri);
+        window.close();
       } else {
-        window.location = "login.html";
+        document.body.innerHTML = "No token received.";
       }
     }
   </script>
 </head>
 <body>
-  Redirecting...
+  Processing...
 </body>
 </html>
