@@ -1,4 +1,4 @@
-config = {
+<script src="config.json"></script>
     "uri": "https://ZegionDesu.github.io/Spotmybackupfix",
     "redirect_uri": "https://ZegionDesu.github.io/Spotmybackupfix/callback",
     "client_id": "f45e7a2b9d5b4e708d261f46313c4cd4",
