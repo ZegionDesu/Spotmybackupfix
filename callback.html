@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Callback</title>
+  <script>
+    window.onload = function () {
+      // Redirect token fragment to login.html
+      if (window.location.hash) {
+        window.location = "login.html" + window.location.hash;
+      } else {
+        window.location = "login.html";
+      }
+    }
+  </script>
+</head>
+<body>
+  Redirecting...
+</body>
+</html>
