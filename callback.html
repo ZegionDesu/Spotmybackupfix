@@ -7,18 +7,26 @@
   <script>
     window.onload = function () {
 
-      // Ambil token dari hash (#access_token=xxxx)
       const hash = window.location.hash.substring(1);
       const params = new URLSearchParams(hash);
       const token = params.get("access_token");
 
-      if (token) {
-        // Kirim token ke window utama
-        window.opener.postMessage(token, config.uri);
-        window.close();
-      } else {
+      if (!token) {
         document.body.innerHTML = "No token received.";
+        return;
       }
+
+      // Try normal method first
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(token, config.uri);
+          window.close();
+          return;
+        }
+      } catch(e){}
+
+      // Android fallback: redirect to index with token
+      window.location.href = "index.html#access_token=" + token;
     }
   </script>
 </head>
