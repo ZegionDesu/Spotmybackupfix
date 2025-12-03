@@ -1,7 +1,7 @@
 config = {
 "uri":"https://ZegionDesu.github.io/spotmybackupfix",
 "redirect_uri":"https://ZegionDesu.github.io/spotmybackupfix/login.html",
-"client_id":"[YOUR_TOKEN_HERE]",
+"client_id":"f45e7a2b9d5b4e708d261f46313c4cd4",
 "slowdown_import": 100,
 "slowdown_export": 100
 };
