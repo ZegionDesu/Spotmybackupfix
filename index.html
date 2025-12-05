@@ -5,10 +5,13 @@
         <title>SpotMyBackup</title>
         
 <script>
-    const token = localStorage.getItem("spotify_token");
-    if (!token) {
-        window.location.href = "login.html";
-    }
+        // Ambil token dari localStorage
+        const token = localStorage.getItem("spotify_token");
+
+        // Kalau belum login → pindah ke login.html
+        if (!token) {
+            window.location.href = "login.html";
+        }
 </script>
         
         <script type="text/javascript" src="config.js"></script>
