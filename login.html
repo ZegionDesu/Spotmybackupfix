@@ -1,26 +1,19 @@
 <!DOCTYPE html>
 <html>
-	<head>
-		<meta http-equiv="content-type" content="text/html; charset=UTF-8">
-		<title>Login Window</title>
-                <script type="text/javascript" src="config.js"></script>
-		<script type='text/javascript'>//<![CDATA[ 
-
-			var conf = config;
-
-			window.onload = function() {
-				var target = window.self === window.top ? window.opener : window.parent;
-				var hash = window.location.hash;
-				if (hash) {
-				    var token = window.location.hash.split('&')[0].split('=')[1];
-				    target.postMessage(token, conf.uri); //embedded
-				}
-			}
-		</script>
-	</head>
-	<body>
-	  
-	</body>
+<head>
+    <meta charset="utf-8">
+    <title>Login</title>
+    <script src="config.js"></script>
+</head>
+<body>
+    <script>
+        window.location.href =
+            "https://accounts.spotify.com/authorize?" +
+            "client_id=" + encodeURIComponent(config.client_id) +
+            "&redirect_uri=" + encodeURIComponent(config.redirect_uri) +
+            "&response_type=token" +
+            "&scope=" + encodeURIComponent("playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify") +
+            "&show_dialog=true";
+    </script>
+</body>
 </html>
-
-
