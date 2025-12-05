@@ -1,36 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>Callback</title>
-  <script src="config.js"></script>
-  <script>
-    window.onload = function () {
-
-      const hash = window.location.hash.substring(1);
-      const params = new URLSearchParams(hash);
-      const token = params.get("access_token");
-
-      if (!token) {
-        document.body.innerHTML = "No token received.";
-        return;
-      }
-
-      // Try normal method first
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage(token, config.uri);
-          window.close();
-          return;
-        }
-      } catch(e){}
-
-      // Android fallback: redirect to index with token
-      window.location.href = "index.html#access_token=" + token;
-    }
-  </script>
+    <meta charset="utf-8">
+    <title>Callback</title>
 </head>
 <body>
-  Processing...
+    <script>
+        // Extract #token from URL
+        if (window.location.hash) {
+            window.location.href = "https://zegiondesu.github.io/Spotmybackupfix/index.html" + window.location.hash;
+        } else {
+            document.body.innerHTML = "No token received.";
+        }
+    </script>
 </body>
 </html>
