@@ -1,777 +1,290 @@
 <!DOCTYPE html>
 <html>
-    <head>
-        <meta http-equiv="content-type" content="text/html" charset="UTF-8">
-        <title>SpotMyBackup</title>
-        
+<head>
+  <meta charset="utf-8">
+  <title>SpotMyBackup (PKCE)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+
+  <script src="config.js"></script>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background:#f7f7f7; color:#222; padding:20px; }
+    .container { max-width:960px; margin:0 auto; background:#fff; padding:18px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.06); }
+    h1 { margin-top:0; }
+    .button { background:#1DB954; color:white; padding:10px 18px; border-radius:8px; border:0; cursor:pointer; font-weight:600; }
+    .button.secondary { background:#2e86de; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .muted { color:#666; font-size:14px; }
+    pre { background:#f1f1f1; padding:10px; border-radius:6px; overflow:auto; }
+    .progress { height:14px; background:#eee; border-radius:8px; overflow:hidden; margin-top:8px; }
+    .progress > i { display:block; height:100%; width:0%; background:#1DB954; transition:width .25s linear; }
+    .hidden { display:none; }
+    input[type=file] { margin-left:6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SpotMyBackup</h1>
+    <p class="muted">Export your playlists/tracks to a file, and import it back later.</p>
+
+    <div id="statusArea" class="muted">Checking login status…</div>
+
+    <div id="controls" class="hidden">
+      <div class="row" style="margin-top:12px;">
+        <button id="btnLogout" class="button secondary">Logout</button>
+        <button id="btnRefresh" class="button">Refresh playlists</button>
+        <button id="btnExport" class="button">Export</button>
+
+        <label class="muted" style="margin-left:8px">Import JSON:
+          <input id="fileImport" type="file" accept=".json">
+        </label>
+      </div>
+
+      <div id="stats" style="margin-top:14px;">
+        <div>Account: <b id="userName">—</b></div>
+        <div id="counts" class="muted" style="margin-top:6px"></div>
+      </div>
+
+      <div id="progressArea" style="margin-top:12px;display:none;">
+        <div id="progressText" class="muted"></div>
+        <div class="progress"><i id="progressBar"></i></div>
+      </div>
+
+      <div id="log" style="margin-top:12px"></div>
+    </div>
+  </div>
+
 <script>
-        // Ambil token dari localStorage
-        const token = localStorage.getItem("spotify_token");
+/* --------- Helpers --------- */
+function $(sel){return document.querySelector(sel);}
+function $all(sel){return Array.from(document.querySelectorAll(sel));}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function setLog(msg, clear=false){ const el=$('#log'); if(clear) el.innerHTML=''; el.innerHTML += '<div>'+msg+'</div>'; }
 
-        // Kalau belum login → pindah ke login.html
-        if (!token) {
-            window.location.href = "login.html";
-        }
+/* --------- Config & Token --------- */
+const cfg = window.config || { client_id:'', redirect_uri:'', origin: location.origin, slowdown_import:200, slowdown_export:200 };
+let token = localStorage.getItem('spotify_token') || null;
+
+/* --------- Startup --------- */
+window.addEventListener('load', startup);
+
+async function startup(){
+  // if no token -> go to login
+  if(!token){
+    // If page has code from PKCE callback redirect (some flows redirect to index.html?),
+    // but our callback stores token in localStorage. So if still no token, redirect to login.
+    // Keep status
+    $('#statusArea').textContent = 'Not logged in — redirecting to login…';
+    // small timeout to show status
+    await sleep(200);
+    window.location.href = 'login.html';
+    return;
+  }
+
+  // token present - initialize UI
+  $('#statusArea').textContent = 'Logged in, fetching account...';
+  $('#controls').classList.remove('hidden');
+
+  bindControls();
+  await refreshUserAndPlaylists();
+}
+
+/* --------- UI bindings --------- */
+function bindControls(){
+  $('#btnLogout').onclick = () => {
+    localStorage.removeItem('spotify_token');
+    localStorage.removeItem('pkce_verifier');
+    token = null;
+    window.location.href = 'login.html';
+  };
+  $('#btnRefresh').onclick = async () => {
+    await refreshUserAndPlaylists();
+  };
+  $('#btnExport').onclick = exportCollections;
+  $('#fileImport').addEventListener('change', handleFileSelect);
+}
+
+/* --------- API helpers --------- */
+async function apiFetch(url, method='GET', body=null){
+  const headers = { 'Authorization': 'Bearer ' + token };
+  if(body && !(body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(url, { method, headers, body: body && (body instanceof FormData ? body : JSON.stringify(body)) });
+  if(res.status === 401){
+    // token invalid/expired — force login
+    setLog('Token expired or invalid — please login again.', true);
+    localStorage.removeItem('spotify_token');
+    window.location.href = 'login.html';
+    throw new Error('Unauthorized');
+  }
+  return res.json();
+}
+
+/* --------- Fetch user + playlists --------- */
+let userId = null;
+let collections = { playlists: {}, saved: [], starred: [] };
+
+async function refreshUserAndPlaylists(){
+  try{
+    $('#statusArea').textContent = 'Loading account...';
+    const me = await apiFetch('https://api.spotify.com/v1/me');
+    userId = me.id;
+    $('#userName').textContent = me.display_name || me.id;
+    setLog('Loaded account: ' + (me.display_name || me.id), true);
+
+    // load playlists (paginated)
+    await loadAllPlaylists();
+    refreshCounts();
+  }catch(e){
+    console.error(e);
+    setLog('Error loading account: ' + e.message, true);
+  }
+}
+
+async function loadAllPlaylists(){
+  $('#statusArea').textContent = 'Loading playlists...';
+  collections.playlists = {};
+  let url = `https://api.spotify.com/v1/me/playlists?limit=50`;
+  while(url){
+    const data = await apiFetch(url);
+    data.items.forEach(pl => {
+      collections.playlists[pl.name] = { id: pl.id, href: pl.tracks.href, tracks: [] };
+    });
+    url = data.next;
+  }
+
+  // for each playlist we'll load tracks count lazily or on export
+  setLog('Found ' + Object.keys(collections.playlists).length + ' playlists.');
+}
+
+/* --------- Counts & progress UI --------- */
+function refreshCounts(){
+  const playlistCount = Object.keys(collections.playlists).length;
+  $('#counts').textContent = `${playlistCount} playlists.`;
+}
+
+/* --------- Export logic --------- */
+async function exportCollections(){
+  $('#progressArea').style.display = 'block';
+  $('#progressText').textContent = 'Exporting playlists and saved tracks...';
+  $('#progressBar').style.width = '0%';
+  setLog('Starting export...', true);
+
+  const exportObj = { playlists: {}, saved: [] };
+
+  // Fetch playlist tracks one by one (respect slowdown_export)
+  const names = Object.keys(collections.playlists);
+  let completed = 0;
+  for(const name of names){
+    const pl = collections.playlists[name];
+    // fetch tracks pages
+    let next = `https://api.spotify.com/v1/playlists/${pl.id}/tracks?limit=100`;
+    const trackUris = [];
+    while(next){
+      const data = await apiFetch(next);
+      data.items.forEach(it => {
+        if(it.track && it.track.uri) trackUris.push({ uri: it.track.uri, name: it.track.name });
+      });
+      next = data.next;
+    }
+    exportObj.playlists[name] = { tracks: trackUris };
+    completed++;
+    $('#progressBar').style.width = Math.round((completed / names.length) * 100) + '%';
+    await sleep(cfg.slowdown_export || 200);
+  }
+
+  // Fetch saved tracks (liked)
+  let nextSaved = 'https://api.spotify.com/v1/me/tracks?limit=50';
+  while(nextSaved){
+    const data = await apiFetch(nextSaved);
+    data.items.forEach(it => {
+      if(it.track && it.track.uri) exportObj.saved.push({ uri: it.track.uri, name: it.track.name });
+    });
+    nextSaved = data.next;
+  }
+
+  // download JSON
+  const filename = 'spotmybackup_' + (new Date()).toISOString().replace(/[:.]/g,'-') + '.json';
+  const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+
+  $('#progressArea').style.display = 'none';
+  setLog('Export finished. File downloaded: ' + filename, true);
+}
+
+/* --------- Import logic (basic) --------- */
+let importColl = null;
+
+function handleFileSelect(e){
+  const f = e.target.files[0];
+  if(!f){ return; }
+  const reader = new FileReader();
+  reader.onload = async function(ev){
+    try{
+      importColl = JSON.parse(ev.target.result);
+      setLog('Import file loaded. Preparing to import...');
+      await processImport();
+    } catch(err){
+      setLog('Invalid JSON file: ' + err.message, true);
+    }
+  };
+  reader.readAsText(f);
+}
+
+async function processImport(){
+  if(!importColl) return setLog('No import data found', true);
+  // For simplicity: create playlists from import that do not exist, then add tracks
+  const names = Object.keys(importColl.playlists || {});
+  let count = 0;
+  $('#progressArea').style.display = 'block';
+  $('#progressText').textContent = 'Importing playlists...';
+  $('#progressBar').style.width = '0%';
+
+  for(const name of names){
+    count++;
+    // if playlist exists, skip creation; else create
+    if(!(name in collections.playlists)){
+      // create playlist
+      const body = { name: name, public: false };
+      const res = await fetch(`https://api.spotify.com/v1/users/${encodeURIComponent(userId)}/playlists`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r=>r.json());
+      if(res && res.id){
+        collections.playlists[name] = { id: res.id, href: res.tracks.href, tracks: [] };
+        setLog('Created playlist: ' + name);
+      } else {
+        setLog('Failed creating playlist: ' + name);
+      }
+    } else {
+      setLog('Playlist exists, will add tracks: ' + name);
+    }
+
+    // add tracks in batches of 100
+    const tracks = (importColl.playlists[name] && importColl.playlists[name].tracks) || [];
+    const uris = tracks.map(t => t.uri).filter(Boolean);
+    while(uris.length){
+      const batch = uris.splice(0,100);
+      const url = `https://api.spotify.com/v1/playlists/${collections.playlists[name].id}/tracks?uris=${encodeURIComponent(batch.join(','))}`;
+      await fetch(url, { method: 'POST', headers: { 'Authorization':'Bearer '+token }});
+      await sleep(cfg.slowdown_import || 200);
+    }
+
+    $('#progressBar').style.width = Math.round((count / names.length) * 100) + '%';
+  }
+
+  $('#progressArea').style.display = 'none';
+  setLog('Import finished.', true);
+  // refresh playlists
+  await loadAllPlaylists();
+  refreshCounts();
+}
+
+/* --------- End --------- */
 </script>
-        
-        <script type="text/javascript" src="config.js"></script>
-        <script type="text/javascript" src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-        <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.8.2/underscore-min.js"></script>
-        
-        <link href='https://fonts.googleapis.com/css?family=Lato:100,300,400,700,900,100italic,300italic,400italic,700italic,900italic&subset=latin,latin-ext' rel='stylesheet' type='text/css'>
-
-        <style type='text/css'>
-            body {
-                padding: 0;
-                margin: 0;
-                font-family: 'Lato', sans-serif;
-                background: url(./gplaypattern.png) repeat;
-                background-size: 188px 178px;
-            }
-
-            .container {
-                width: 640px;
-                margin-left: auto;
-                margin-right: auto;
-            }
-            .footer {
-                position: fixed;
-                bottom: 0;
-                width: 100%;
-            }
-
-            .heading {
-                color: #444;
-                font-size: 24px;
-                background-color: rgba(255,255,255,0.9);
-                border-bottom: solid 1px #eaeaea;
-                width: 100%;
-                z-index: 500;
-                padding: 12px;
-            }
-
-            .button-main {
-                font-size: 18px;
-                font-weight: 600;
-                line-height: 1.5;
-                color: #fff;
-                background-color: #2ebd59;
-                display: inline-block;
-                margin-bottom: 0;
-                text-align: center;
-                vertical-align: middle;
-                cursor: pointer;
-                background-image: none;
-                border: 1px solid transparent;
-                white-space: nowrap;
-                border-radius: 500px;
-                padding: 12px 47px 8px;
-                border-width: 0;
-                letter-spacing: 1.2px;
-                min-width: 130px;
-                text-transform: uppercase;
-                white-space: normal;
-                margin: 0 0 1em;
-            }
-            .button-big {
-                margin-left: 150px;
-            }
-            .button-medium {
-                margin-left: 80px;
-            }
-
-            .title-bold {
-                font-weight: bold; 
-                font-size: 44px;
-            }
-            .title-light {
-                font-weight: 300; 
-                color: #555;
-                font-size: 44px;
-            }
-            .title-medium {
-                font-weight: bold;
-                font-size: 18px;
-            }
-
-            .progress-bar {
-                width: 0%;
-                background-color: #86e01e;
-                position: relative;
-                height: 16px;
-                border-radius: 4px;
-                -webkit-transition: 0.4s linear;
-                -moz-transition: 0.4s linear;
-                -o-transition: 0.4s linear;
-                transition: 0.4s linear;
-                -webkit-transition-property: width, background-color;
-                -moz-transition-property: width, background-color;
-                -o-transition-property: width, background-color;
-                transition-property: width, background-color;
-                -webkit-box-shadow: 0 0 1px 1px rgba(0, 0, 0, 0.25), inset 0 1px rgba(255, 255, 255, 0.1);
-                box-shadow: 0 0 1px 1px rgba(0, 0, 0, 0.25), inset 0 1px rgba(255, 255, 255, 0.1);
-            }
-
-            .progress {
-                width: 100%;
-                padding: 4px;
-                margin-top: 10px;
-            }
-
-            .link {
-                font-size: 14px;
-                padding: 5px 15px;
-                color: #121F59;
-                text-decoration: none;
-            }
-            .link:hover {
-                color: #A2C852;
-            }
-        </style>
-    </head>
-    <body>
-        <a href="https://github.com/secuvera/SpotMyBackup/"><img style="position: absolute; top: 0; left: 0; border: 0;" src="https://camo.githubusercontent.com/121cd7cbdc3e4855075ea8b558508b91ac463ac2/68747470733a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f6c6566745f677265656e5f3030373230302e706e67" alt="Fork me on GitHub" data-canonical-src="https://s3.amazonaws.com/github/ribbons/forkme_left_green_007200.png"></a>
-
-        <div class="container">
-            <div class="heading">
-                <span class="title-bold">Spot</span><span class="title-light">My</span><span class="title-bold">Backup</span>
-                <br/>
-                <br/>
-                <div id="pnlLoggedOut">
-                    <span><b>Export</b> your playlists and tracks setup into a file by a single click. <b>Import</b> the file to restore your setup at any time.</span>
-                    <br/>
-                    <br/>
-                    <button id="login" class="button-main button-big">Login with Spotify</button>
-                </div>
-            </div>
-            <div id="pnlLoadingAccount" style="font-size: 16px; display: none;" class="heading">
-                <div class="title-medium">Account: <span id="userName"></span></div>
-                <br/>
-                <div id="loadingPlaylists"></div>
-                <div id="loadingTracks"></div>
-                <br/>
-                <div id="loadingTitle"></div>
-            </div>
-            <div id="pnlAction" style="overflow: hidden; display: none;">
-                <br/>
-                <div style="width: 50%; float: left;">
-                    <button id="btnExport" class="button-main button-medium">Export</button>
-                </div>
-                <div style="width: 50%; float: left;">
-                    <button id="btnImport" class="button-main button-medium">Import</button>
-                </div>
-            </div>
-            <div id="pnlImport" style="font-size: 16px; overflow: hidden; display: none;" class="heading">
-                <div id="pnlFile" style="">
-                    <div style="float: left;">Select a previously exported file</div>
-                    <input style="float: left; margin-left: 10px;" type="file" id="fileImport" />
-                </div>
-                <div id="pnlFileInfo" style="display: none;">
-                    <div class="title-medium">File: <span id="fileName"></span></div>
-                    <br/>
-                    <div id="filePlaylists"></div>
-                    <div id="fileTracks"></div>
-                </div>
-            </div>
-            <div id="pnlUpload" style="font-size: 16px; overflow: hidden; display: none;" class="heading">
-                <div class="title-medium">Importing new playlists and tracks</div>
-                <br/>
-                <div><span>Processed playlists: </span><span id="playlistStep"></span>/<span id="playlistTotal"></span></div>
-                <div><span>Processed tracks: </span><span id="trackStep"></span>/<span id="trackTotal"></span></div>
-                <br/>
-                <div id="globalStep"></div>
-                <div class="progress">
-                    <div id="progressBar" class="progress-bar" style="display: none;"></div>
-                </div>
-            </div>
-        </div>
-        <div class="footer">
-            <div class="container" style="background-color: rgba(255,255,255,0.9); border-bottom: solid 1px #eaeaea; overflow: hidden;">
-                <a href="https://github.com/secuvera/SpotMyBackup/wiki" style="float: left;" class="link">Wiki</a>
-                <a href="https://www.secuvera.de/unternehmen/impressum/" style="float: right;" class="link">Impress</a>
-            </div>
-        </div>
-        <script type='text/javascript'>
-
-
-var conf = config;
-
-var authWindow = null;
-var token = null;
-var userId = '';
-var collections = {};
-var name = 'spotify';
-
-var isImporting = false;
-var isExporting = false;
-var globalStep = "";
-var playlistStep = 0;
-var trackStep = 0;
-var trackTotal = 0;
-
-var playlistQueue = [];
-var savedQueue = [];
-
-var makingChanges = false;
-
-function refreshTrackData(callback) {
-    if (!isExporting && !isImporting) {
-        isExporting = true;
-        resetCounter();
-        $('#pnlLoadingAccount').show();
-        $('#loadingTitle').html('Please wait. Loading your playlists and tracks ...');
-        refreshPlaylist(function () {
-            refreshMyMusicTracks(function () {
-                // refreshStarredTracks(function () {
-                    $('#loadingTitle').html('Finished loading, you now might want to export or import.');
-                    isExporting = false;
-                    callback();
-                // });
-            });
-        }); 
-    }
-}
-
-function resetCounter() {
-    globalStep = '';
-    playlistStep = 0;
-    playlistTotal = 0;
-    trackStep = 0;
-    trackTotal = 0;
-}
-
-function refreshProgress() {
-    $('#globalStep').html(globalStep);
-    $('#playlistStep').html(playlistStep);
-    $('#playlistTotal').html(playlistTotal);
-    $('#trackStep').html(trackStep);
-    $('#trackTotal').html(trackTotal);
-    var progress = 0;
-    if (trackTotal > 0) {
-        var progress = Math.floor(((trackStep / trackTotal) * 100));
-    }
-    $('#progressBar').css('width', progress+'%')
-    if (typeof collections !== 'undefined' && !makingChanges) {
-        var set = collectionProperties(collections);
-        $('#loadingPlaylists').html(""+set.playlistCount+" playlists");
-        $('#loadingTracks').html(""+set.trackCount+" tracks");
-    }
-    if (typeof importColl !== 'undefined') {
-        var set2 = collectionProperties(importColl);
-        $('#filePlaylists').html(""+set2.playlistCount+" playlists");
-        $('#fileTracks').html(""+set2.trackCount+" tracks");
-    }
-    setTimeout(refreshProgress, 1000);
-}
-
-function login() {
-    var set = {
-        client_id: conf.client_id,
-        redirect_uri: conf.redirect_uri,
-        scope: 'playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify',
-        response_type: 'token',
-        show_dialog: 'true'
-    };
-
-    // Open authorize page directly (no popup) — WORKS ON ANDROID
-    window.location.href = "https://accounts.spotify.com/authorize?" + urlEncodeSet(set);
-}
-
-
-function authCallback(event){
-    if (event.origin !== conf.uri) {
-        console.log("config.uri missconfigured:");
-        console.log({ uri: conf.uri, origin: origin });
-        return;
-    }
-    if (authWindow) {
-        authWindow.close();
-    }
-    handleAuth(event.data);
-}
-
-function urlEncodeSet(set) {
-    var comps = [];
-    for (var i in set) {
-        if (set.hasOwnProperty(i)) {
-            comps.push(encodeURIComponent(i)+"="+encodeURIComponent(set[i]));
-        }
-    }
-    var string = comps.join("&");
-    return string;
-}
-
-function download(filename, text) {
-    var pom = document.createElement('a');
-    pom.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
-    pom.setAttribute('download', filename);
-
-    if (document.createEvent) {
-        var event = document.createEvent('MouseEvents');
-        event.initEvent('click', true, true);
-        pom.dispatchEvent(event);
-    }
-    else {
-        pom.click();
-    }
-}
-
-function readFile(evt) {
-    //Retrieve the first (and only!) File from the FileList object
-    var f = evt.target.files[0]; 
-
-    if (f) {
-        $('#fileName').html(f.name);
-
-        var r = new FileReader();
-        r.onload = function(e) { 
-            var json = e.target.result;
-
-            importColl = JSON.parse(json);
-
-            $('#pnlFile').hide();
-            $('#pnlFileInfo').show();
-            $('#pnlUpload').show();
-
-            compareEverything();
-        }
-        r.readAsText(f);
-    } else { 
-      alert("Failed to load file");
-    }
-}
-
-function collectionProperties(coll) {
-    return { playlistCount: collPlaylistCount(coll), trackCount: collTrackCount(coll) };
-}
-
-function collTrackCount(coll) {
-    var count = 0;
-    var keys = _.keys(coll.playlists);
-    $.each(keys, function (index, value) {
-        count += coll.playlists[value].tracks.length;
-    });
-    if (coll.starred) {
-        count += coll.starred.length;
-    }
-    if (coll.saved) {
-        count += coll.saved.length;
-    }
-    return count;
-}
-
-function collPlaylistCount(coll) {
-    var keys = _.keys(coll.playlists);
-    var count = keys.length + 1;
-    if (!("importedStarred" in keys)) {
-        count++;
-    }
-    return count;
-}
-
-function compareEverything() {
-    if (!isImporting && !isExporting) {
-        isImporting = true;
-        makingChanges = true;
-        resetCounter();
-
-        savedQueue = [];
-        playlistQueue = [];
-
-        globalStep = "Uploading";
-        if (typeof importColl !== 'undefined') {
-
-            playlistTotal = collPlaylistCount(importColl);            
-
-            // TONOTDO:compare starred -> can not really do that since there is no api to manipulate those
-            // instead we just create a replacement-standard-list
-            globalStep = "Comparing starred tracks";
-            
-            makeSureImportedStarredExists(function (proceed) {
-                if (importColl.starred && importColl.starred.length > 0) {
-                    compareUriTracks(importColl.starred, collections.starred, addToStarred);
-                }
-                // compare saved
-                globalStep = "Comparing saved tracks";
-                compareIdTracks(importColl.saved, collections.saved, addToSaved);
-                playlistStep += 1;
-
-                // compare other playlists
-                var playlistNames = _.keys(importColl.playlists);
-                globalStep = "Comparing custom playlists";
-                handlePlaylistCompare(playlistNames.reverse(), function () {
-                    handleTrackUpload();
-                });
-            });
-        }
-    }
-}
-
-function handleTrackUpload() {
-
-    trackDiff = savedQueue.length + playlistQueue.length;
-    trackTotal = Math.max(collTrackCount(importColl), trackDiff);
-    trackStep = trackTotal - trackDiff;
-
-
-    if (trackTotal > 0) {
-        $('#progressBar').show();
-        globalStep = "Uploading tracks";
-        handleSavedRequests(savedQueue.reverse(), function () {
-            handlePlaylistRequests(playlistQueue.reverse(), function () {
-                globalStep = "Finished uploading";
-                trackTotal = trackStep;
-                isImporting = false;
-            });
-        });
-    } else {
-        globalStep = "No new tracks found in import";
-    }
-}
-
-function handlePlaylistCompare(names, callback) {
-    var name = names.pop();
-    if (!name) {
-        callback();
-        return;
-    }
-    makeSurePlaylistExists(name, function (proceed) {
-        if (proceed) {
-            var playlistId = collections.playlists[name].id;
-            compareUriTracks(importColl.playlists[name].tracks, collections.playlists[name].tracks, function (uri) {
-                addToPlaylist(playlistId, uri);
-            });
-        }
-        handlePlaylistCompare(names, callback);
-    });
-}
-
-function addToPlaylist(playlistId, trackUri) {
-    playlistQueue.push('https://api.spotify.com/v1/users/' + userId + '/playlists/' + playlistId + '/tracks?uris=' + encodeURIComponent(trackUri));
-}
-
-function makeSurePlaylistExists(name, callback) {
-    playlistStep += 1;
-    if (name in collections.playlists) {
-        callback(true);
-        return;
-    }
-    var set = { name: name, public: "true" };
-    $.ajax({
-        method: "POST",
-        url: 'https://api.spotify.com/v1/users/' + userId + '/playlists',
-        data: JSON.stringify(set),
-        contentType: 'application/json',
-        headers: {
-        'Authorization': 'Bearer ' + token
-        },
-        success: function(response) {         
-            // alert(JSON.stringify(response));
-            collections.playlists[response.name] = {
-                name: response.name,
-                href: response.tracks.href,
-                id: response.id,
-                tracks: []
-            };
-            callback(true);
-        },
-        fail: function () {
-            callback(false);
-        }
-    });
-}
-
-function makeSureImportedStarredExists(callback) {
-    var name = 'importedStarred';
-    makeSurePlaylistExists(name, callback);
-}
-
-function addToStarred(trackUri) {
-    var name = 'importedStarred';
-    var playlistId = collections.playlists[name].id;
-    uriInTracks(trackUri, collections.playlists[name].tracks, function (uri) {
-        addToPlaylist(playlistId, uri);
-    });
-}
-
-function handleSavedRequests(arr, callback) {
-    var url = arr.pop();
-    if (url) {
-        trackStep += 1;
-        $.ajax({
-            method: "PUT",
-            url: url,
-            headers: {
-            'Authorization': 'Bearer ' + token
-            },
-            success: function () {
-            },
-            fail: function (jqXHR, textStatus, errorThrown) {
-                console.log(errorThrown);
-            }
-        })
-        .always(function () {
-            handleSavedRequests(arr, callback);
-        });
-    } else {
-        callback();
-    }
-}
-
-
-function handlePlaylistRequestsWithTimeout(arr, callback) {
-        setTimeout(function() { console.log("Fast runners are dead runners"); handlePlaylistRequests(arr, callback) }, conf.slowdown_import);
-}
-
-function handlePlaylistRequests(arr, callback) {
-    var url = arr.pop();
-    if (url) {
-        trackStep += 1;   
-        $.ajax({
-            method: "POST",
-            url: url,
-            contentType: 'application/json',
-            headers: {
-            'Authorization': 'Bearer ' + token
-            },
-            success: function(response) {      
-                // collections.playlists[response.name] = {
-                //     id: response.id,
-                //     uri: response.uri
-                // };
-            },
-            fail: function (jqXHR, textStatus, errorThrown) {
-                console.log(errorThrown);
-            }
-        })
-        .always(function () {
-            handlePlaylistRequestsWithTimeout(arr, callback);
-        })
-    } else {
-        callback();
-    }
-}
-
-function uriInTracks(uri, tracks, addCallback) {
-    var found = false;
-    $.each(tracks, function (index, value) {
-        if (value.uri == uri) {
-            found = true;
-        }
-    });
-    if (!found) {
-        addCallback(uri);
-    }
-}
-
-function addToSaved(id) {
-    savedQueue.push('https://api.spotify.com/v1/me/tracks?ids='+id);
-}
-
-function compareUriTracks(imported, stored, addCallback) {
-    $.each(imported, function (index, value) {
-        var found = false;
-        $.each(stored, function (index2, value2) {
-            if (value.uri == value2.uri) {
-                found = true;
-            }
-        });
-        if (!found) {
-            addCallback(value.uri);
-        }
-    });
-}
-
-function compareIdTracks(imported, stored, addCallback) {
-    $.each(imported, function (index, value) {
-        var found = false;
-        $.each(stored, function (index2, value2) {
-            if (value.id == value2.id) {
-                found = true;
-            }
-        });
-        if (!found) {
-            addCallback(value.id);
-        }
-    });
-}
-
-function bindControls() {
-    $('#btnImport').click(function () {
-        $('#pnlAction').hide();
-        $('#pnlImport').show();
-    });
-    $('#btnExport').click(function () {
-        var json = JSON.stringify(collections);
-        var d = new Date();
-        var time = '@' + d.getFullYear() + '_' + (d.getMonth() + 1) + '_' + d.getDate();
-        download(name+time+'.json', json);
-    });
-    $('#fileImport').change(readFile);
-}
-
-function handleAuth(accessToken) {
-    token = accessToken;
-    // fetch my public playlists
-    $.ajax({
-        url: 'https://api.spotify.com/v1/me',
-        headers: {
-        'Authorization': 'Bearer ' + accessToken
-        },
-        success: function(response) {         
-            var user_id = response.id.toLowerCase();
-            userId = user_id;
-            name = user_id;
-
-            $('#userName').html(name);
-            $('#pnlLoggedOut').hide();
-
-            refreshTrackData(function () {                   
-                $('#pnlAction').show();
-            });
-        }
-    });
-}
-
-function refreshMyMusicTracks(callback) {
-    collections.saved = [];
-    playlistStep += 1;
-    loadTrackChunks('https://api.spotify.com/v1/me/tracks', collections.saved, callback);
-}
-
-// DEPRECATED
-// function refreshStarredTracks(callback) {
-//     collections.starred = [];
-//     playlistStep += 1;
-//     loadStarred('https://api.spotify.com/v1/users/' + userId + '/starred', collections.starred, callback)
-// }
-
-// DEPRECATED
-// function loadStarred(url, arr, callback) {
-//     $.ajax({
-//         url: url,
-//         headers: {
-//             'Authorization': 'Bearer ' + token
-//         },
-//         success: function(data) {         
-//             if (!data) return;
-//             if ('tracks' in data) {
-//                 loadTrackChunks(data.tracks.href, arr, callback);
-//             } else {
-//                 callback();
-//             }                
-//         }
-//     });
-// }
-
-function loadTrackChunksWithTimeout(url, arr, callback, timeout) {
-        setTimeout(function() { console.log("Taking breath, not to fast my cheetah"); loadTrackChunks(url, arr, callback) }, conf.slowdown_export);
-}
-
-function loadTrackChunks(url, arr, callback) {
-    $.ajax({
-        url: url,
-        headers: {
-            'Authorization': 'Bearer ' + token
-        },
-        success: function (data) {
-            if (!data) return;
-            if ('items' in data) {
-                $.each(data.items, function (index, value) {
-                    if(value.track !== null){
-                        arr.push({ id: value.track.id, uri: value.track.uri });    
-                    }else{
-                        console.log("track is null", value);
-                    }                    
-                });
-            } else {
-                arr.push({ id: data.track.id, uri: data.track.uri });
-            }
-            if (data.next) {
-                loadTrackChunksWithTimeout(data.next, arr, callback);
-            } else {
-                callback();
-            }
-        }
-    });
-}
-
-function refreshPlaylist(callback) {
-    collections.playlists = {};
-    var playlists = [];
-    loadPlaylistChunks('https://api.spotify.com/v1/users/' + userId + '/playlists', playlists, function () {
-        handlePlaylistTracks(playlists, collections.playlists, callback);
-    });
-}
-
-function loadPlaylistChunks(url, arr, callback) {
-    $.ajax({
-        url: url,
-        headers: {
-            'Authorization': 'Bearer ' + token
-        },
-        success: function (data) {
-            if (!data) return;
-            if ('items' in data) {
-                $.each(data.items, function (index, value) {
-                    if (value.tracks && value.tracks.href) {
-                        arr.push({
-                            name: value.name,
-                            href: value.tracks.href,
-                            id: value.id,
-                            tracks: []
-                        });
-                    }
-                });
-            } else {
-                if (data.tracks && data.tracks.href) {
-                    arr.push({
-                        name: data.name,
-                        href: data.tracks.href,
-                        id: value.id,
-                        tracks: []
-                    });
-                }
-            }
-            if (data.next) {
-                loadPlaylistChunks(data.next, arr, callback);
-            } else {
-                callback();
-            }
-        }
-    });
-}
-
-function handlePlaylistTracks(arr, result, callback) {
-    var item = arr.pop();
-    if (!item) {
-        return callback();
-    }
-    playlistStep += 1;
-    item.tracks = [];
-    loadTrackChunks(item.href, item.tracks, function () {
-        delete item.href;
-        result[item.name] = item;
-        if (arr.length == 0) {
-            callback();
-        } else {
-            handlePlaylistTracks(arr, result, callback);
-        }
-    });
-}
-
-window.onload = function() {
-    if (navigator.userAgent.indexOf('MSIE') !== -1 || navigator.appVersion.indexOf('Trident/') > 0) {
-        // MSIE
-        $('#pnlLoggedOut').html('Please use Firefox or Chrome, due to a bug in Internet Explorer');
-    } else {
-        $('#login').click(login);
-        window.addEventListener("message", authCallback, false);
-        bindControls();
-        refreshProgress();
-    }
-}
-            
-        </script>
-    </body>
+</body>
 </html>
