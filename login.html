@@ -8,19 +8,46 @@
 <body>
 
 <script>
-    // Buat URL authorize Spotify
-    const authUrl = 
-        "https://accounts.spotify.com/authorize?" +
-        "client_id=" + encodeURIComponent(config.client_id) +
-        "&redirect_uri=" + encodeURIComponent(config.redirect_uri) +
-        "&response_type=token" +
-        "&scope=" + encodeURIComponent(
-            "playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify"
-        ) +
-        "&show_dialog=true";
+// --- Generate random string ---
+function generateRandomString(length) {
+    const array = new Uint32Array(length);
+    window.crypto.getRandomValues(array);
+    return Array.from(array, dec => ('0' + dec.toString(16)).substr(-2)).join('');
+}
 
-    // Redirect langsung
-    window.location.replace(authUrl);
+// --- Base64 URL Encode ---
+function base64urlencode(a){
+    return btoa(String.fromCharCode.apply(null, new Uint8Array(a)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// --- Create code challenge ---
+async function generateCodeChallenge(verifier) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(verifier);
+    const digest = await window.crypto.subtle.digest("SHA-256", data);
+    return base64urlencode(digest);
+}
+
+(async () => {
+    const verifier = generateRandomString(64);
+    const challenge = await generateCodeChallenge(verifier);
+
+    // save for callback
+    localStorage.setItem("pkce_verifier", verifier);
+
+    const params = new URLSearchParams({
+        client_id: config.client_id,
+        response_type: "code",
+        redirect_uri: config.redirect_uri,
+        code_challenge_method: "S256",
+        code_challenge: challenge,
+        scope: "playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify"
+    });
+
+    // redirect to Spotify authorize
+    window.location.href = "https://accounts.spotify.com/authorize?" + params.toString();
+})();
 </script>
 
 </body>
