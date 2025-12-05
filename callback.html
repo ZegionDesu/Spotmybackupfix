@@ -2,19 +2,43 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spotify Callback</title>
-  <script>
-    window.onload = function () {
-      if (window.location.hash.startsWith("#access_token")) {
-        // Kirim token ke index.html (langsung ke hal utama)
-        window.location.href = "index.html" + window.location.hash;
-      } else {
-        document.body.innerHTML = "No token received. (Spotify blocked redirect)";
-      }
-    };
-  </script>
+  <title>Callback</title>
 </head>
 <body>
-  Redirecting...
+<script>
+(async () => {
+    const code = new URLSearchParams(window.location.search).get("code");
+    if (!code) {
+        document.body.innerHTML = "No authorization code!";
+        return;
+    }
+
+    const verifier = localStorage.getItem("pkce_verifier");
+
+    const body = new URLSearchParams({
+        client_id: "f45e7a2b9d5b4e708d261f46313c4cd4",
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: "https://zegiondesu.github.io/Spotmybackupfix/callback",
+        code_verifier: verifier
+    });
+
+    // Request access token
+    const result = await fetch("https://accounts.spotify.com/api/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body
+    }).then(r => r.json());
+
+    if (result.access_token) {
+        localStorage.setItem("spotify_token", result.access_token);
+
+        // redirect to main app
+        window.location.href = "index.html";
+    } else {
+        document.body.innerHTML = "Token exchange failed:<br><pre>" + JSON.stringify(result, null, 2) + "</pre>";
+    }
+})();
+</script>
 </body>
 </html>
