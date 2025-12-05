@@ -6,14 +6,22 @@
     <script src="config.js"></script>
 </head>
 <body>
-    <script>
-        window.location.href =
-            "https://accounts.spotify.com/authorize?" +
-            "client_id=" + encodeURIComponent(config.client_id) +
-            "&redirect_uri=" + encodeURIComponent(config.redirect_uri) +
-            "&response_type=token" +
-            "&scope=" + encodeURIComponent("playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify") +
-            "&show_dialog=true";
-    </script>
+
+<script>
+    // Buat URL authorize Spotify
+    const authUrl = 
+        "https://accounts.spotify.com/authorize?" +
+        "client_id=" + encodeURIComponent(config.client_id) +
+        "&redirect_uri=" + encodeURIComponent(config.redirect_uri) +
+        "&response_type=token" +
+        "&scope=" + encodeURIComponent(
+            "playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify"
+        ) +
+        "&show_dialog=true";
+
+    // Redirect langsung
+    window.location.replace(authUrl);
+</script>
+
 </body>
 </html>
