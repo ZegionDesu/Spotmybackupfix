@@ -5,14 +5,45 @@
         <title>SpotMyBackup</title>
 
         <script type="text/javascript" src="config.js"></script>
-        <script type="text/javascript" src="https://code.jquery.com/jquery-1.11.2.min.js"></script>
+        <script type="text/javascript" src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
         <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.8.2/underscore-min.js"></script>
-        
-        // Fallback Android login: handle token via URL hash
-if (window.location.hash.includes("access_token")) {
-    var token = window.location.hash.split("access_token=")[1].split("&")[0];
-    handleAuth(token);
-}
+
+        <script>
+        function urlEncode(obj) {
+            return Object.keys(obj)
+                .map(k => encodeURIComponent(k) + "=" + encodeURIComponent(obj[k]))
+                .join("&");
+        }
+
+        function login() {
+            let set = {
+                client_id: config.client_id,
+                redirect_uri: config.redirect_uri,
+                response_type: "token",
+                scope: "playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify",
+                show_dialog: "true"
+            };
+
+            // Android-safe (NO POPUP)
+            window.location.href = "https://accounts.spotify.com/authorize?" + urlEncode(set);
+        }
+
+        // Receive token after redirect
+        window.onload = function () {
+            if (window.location.hash.includes("access_token")) {
+                let hash = window.location.hash.substring(1);
+                let params = new URLSearchParams(hash);
+                let token = params.get("access_token");
+
+                if (token) {
+                    localStorage.setItem("spotify_token", token);
+                    alert("Login success!");
+                }
+            }
+        };
+
+        document.getElementById("login").onclick = login;
+            </script>
         
         <link href='https://fonts.googleapis.com/css?family=Lato:100,300,400,700,900,100italic,300italic,400italic,700italic,900italic&subset=latin,latin-ext' rel='stylesheet' type='text/css'>
 
